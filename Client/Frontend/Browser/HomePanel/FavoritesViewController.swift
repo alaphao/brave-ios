@@ -4,6 +4,7 @@
 
 import UIKit
 import Shared
+import BraveShared
 import XCGLogger
 import Storage
 import Deferred
@@ -13,12 +14,14 @@ private let log = Logger.browserLogger
 
 protocol TopSitesDelegate: class {
     func didSelectUrl(url: URL)
+    func didTapDuckDuckGoCallout()
 }
 
 class FavoritesViewController: UIViewController {
     private struct UI {
         static let statsHeight: CGFloat = 110.0
         static let statsBottomMargin: CGFloat = 5
+        static let searchEngineCalloutPadding: CGFloat = 30.0
     }
     weak var linkNavigationDelegate: LinkNavigationDelegate?
     weak var delegate: TopSitesDelegate?
@@ -41,7 +44,6 @@ class FavoritesViewController: UIViewController {
             // Entire site panel, including the stats view insets
             $0.contentInset = UIEdgeInsets(top: UI.statsHeight, left: 0, bottom: 0, right: 0)
         }
-        
         return view
     }()
     private lazy var dataSource: FavoritesDataSource = { return FavoritesDataSource() }()
@@ -50,11 +52,34 @@ class FavoritesViewController: UIViewController {
         $0.autoresizingMask = [.flexibleWidth]
     }
     
-    /// Called after user taps on ddg popup to set it as a default search enginge in private browsing mode.
-    var ddgPrivateSearchCompletionBlock: (() -> Void)?
+    fileprivate var ddgLogo = UIImageView(image: #imageLiteral(resourceName: "duckduckgo"))
+    
+    fileprivate lazy var ddgLabel: UILabel = {
+        let label = UILabel()
+        label.numberOfLines = 0
+        label.textColor = BraveUX.GreyD
+        label.font = UIFont.systemFont(ofSize: 14, weight: UIFont.Weight.regular)
+        label.text = Strings.DDG_promotion
+        return label
+    }()
+    
+    fileprivate lazy var ddgButton: UIControl = {
+        let control = UIControl()
+        control.addTarget(self, action: #selector(showDDGCallout), for: .touchUpInside)
+        return control
+    }()
+    
+    @objc private func showDDGCallout() {
+        delegate?.didTapDuckDuckGoCallout()
+    }
     
     // MARK: - Init/lifecycle
-    init() {
+    
+    let profile: Profile
+    
+    init(profile: Profile) {
+        self.profile = profile
+        
         super.init(nibName: nil, bundle: nil)
         NotificationCenter.default.do {
             $0.addObserver(self, selector: #selector(existingUserTopSitesConversion), 
@@ -78,6 +103,7 @@ class FavoritesViewController: UIViewController {
             $0.removeObserver(self, name: Notification.Name.TopSitesConversion, object: nil)
             $0.removeObserver(self, name: Notification.Name.PrivacyModeChanged, object: nil)
         }
+        collection.removeObserver(self, forKeyPath: #keyPath(UICollectionView.contentSize))
     }
     
     override func viewDidLoad() {
@@ -104,8 +130,15 @@ class FavoritesViewController: UIViewController {
         braveShieldStatsView.frame = statsViewFrame
         
         collection.addSubview(braveShieldStatsView)
+        collection.addSubview(ddgButton)
+        
+        ddgButton.addSubview(ddgLogo)
+        ddgButton.addSubview(ddgLabel)
         
         makeConstraints()
+        
+        collection.addObserver(self, forKeyPath: #keyPath(UICollectionView.contentSize), options: [.new, .initial], context: nil)
+        updateDuckDuckGoVisibility()
     }
     
     override func viewDidLayoutSubviews() {
@@ -113,6 +146,18 @@ class FavoritesViewController: UIViewController {
         
         // This makes collection view layout to recalculate its cell size.
         collection.collectionViewLayout.invalidateLayout()
+    }
+    
+    override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?) {
+        if keyPath == #keyPath(UICollectionView.contentSize) {
+            let size = ddgButton.systemLayoutSizeFitting(UILayoutFittingExpandedSize)
+            ddgButton.frame = CGRect(
+                x: ceil((collection.bounds.width - size.width) / 2.0),
+                y: collection.contentSize.height + UI.searchEngineCalloutPadding,
+                width: size.width,
+                height: size.height
+            )
+        }
     }
     
     /// Handles long press gesture for UICollectionView cells reorder.
@@ -138,6 +183,18 @@ class FavoritesViewController: UIViewController {
     fileprivate func makeConstraints() {
         collection.snp.makeConstraints { make in
             make.edges.equalTo(self.view.safeAreaLayoutGuide.snp.edges)
+        }
+        
+        ddgLogo.snp.makeConstraints { make in
+            make.top.left.bottom.equalTo(0)
+            make.size.equalTo(38)
+        }
+        
+        ddgLabel.snp.makeConstraints { make in
+            make.top.right.bottom.equalTo(0)
+            make.left.equalTo(self.ddgLogo.snp.right).offset(5)
+            make.width.equalTo(180)
+            make.centerY.equalTo(self.ddgLogo)
         }
     }
     
@@ -165,6 +222,7 @@ class FavoritesViewController: UIViewController {
         collection.backgroundColor = isPrivateBrowsing ? UX.HomePanel.BackgroundColorPBM : UX.HomePanel.BackgroundColor
         braveShieldStatsView.timeStatView.color = isPrivateBrowsing ? UX.GreyA : UX.GreyJ
         collection.reloadData()
+        updateDuckDuckGoVisibility()
     }
     
     @objc func showPrivateTabInfo() {
@@ -174,6 +232,21 @@ class FavoritesViewController: UIViewController {
             // let t = getApp().tabManager
             // _ = t?.addTabAndSelect(URLRequest(url: url))
         }
+    }
+    
+    // MARK: DuckDuckGo
+    
+    func shouldShowDuckDuckGoCallout() -> Bool {
+        let isSearchEngineSet = profile.searchEngines.defaultEngine(forType: .privateMode).shortName == OpenSearchEngine.EngineNames.duckDuckGo
+        let isPrivateBrowsing = PrivateBrowsingManager.shared.isPrivateBrowsing
+        return isPrivateBrowsing && !isSearchEngineSet
+    }
+    
+    func updateDuckDuckGoVisibility() {
+        let isVisible = shouldShowDuckDuckGoCallout()
+        let heightOfCallout = ddgButton.systemLayoutSizeFitting(UILayoutFittingExpandedSize).height + (UI.searchEngineCalloutPadding * 2.0)
+        collection.contentInset.bottom = isVisible ? heightOfCallout : 0
+        ddgButton.isHidden = !isVisible
     }
 }
 
